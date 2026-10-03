@@ -286,55 +286,119 @@ function parseServers(html) {
     var online = collectCodes(html, "player");
     return online.length > 0 ? online : collectCodes(html, "external");
 }
-// Resumen del HTML de la pantalla intermedia (para el modo DEBUG): enlaces y scripts.
+// Texto de diagnóstico (modo DEBUG) con lo que respondió la pantalla intermedia.
 var lastExternalDebug = "";
-function summarizeHtml(html) {
-    var clean = html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<svg[\s\S]*?<\/svg>/gi, "");
-    var anchors = (clean.match(/<(?:a|button)\b[^>]*>/gi) || []).join(" ").replace(/\s+/g, " ").slice(0, 700);
-    var scripts = (clean.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [])
-        .filter(function (t) { return t.indexOf("gtag") === -1 && t.indexOf("googletagmanager") === -1; })
-        .join(" ").replace(/\s+/g, " ").slice(0, 1100);
-    return "ENLACES: ".concat(anchors, " SCRIPTS: ").concat(scripts);
+function isExternalUrl(u) {
+    var ownHost = getHost(SITE_BASE).replace(/^www\./, "");
+    return /^https?:\/\//i.test(u) && getHost(u).indexOf(ownHost) === -1;
 }
-// /external/<código> es la pantalla de "Preparando enlace…"; su botón apunta al embed real.
+// Busca en un JSON la primera cadena que sea una URL externa (url, link, redirect, to…).
+function findUrlInJson(value, depth) {
+    if (depth === undefined)
+        depth = 0;
+    if (depth > 4 || value === null || value === undefined)
+        return null;
+    if (typeof value === "string")
+        return isExternalUrl(value) ? value : null;
+    if (typeof value === "object") {
+        var keys = Object.keys(value);
+        for (var i = 0; i < keys.length; i++) {
+            var found = findUrlInJson(value[keys[i]], depth + 1);
+            if (found)
+                return found;
+        }
+    }
+    return null;
+}
+// Heurísticas sobre el HTML de la pantalla: embed de Vidara, redirecciones, data-*, base64, enlaces.
+function findEmbedInHtml(html) {
+    var unescaped = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+    var vidara = unescaped.match(/https?:\/\/[a-z0-9.-]*vidara[a-z0-9.-]*\/e\/[A-Za-z0-9_-]+/i);
+    if (vidara)
+        return vidara[0];
+    var m;
+    var metaRe = /http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i;
+    m = unescaped.match(metaRe);
+    if (m && isExternalUrl(m[1]))
+        return m[1];
+    var locRe = /location(?:\.href)?\s*(?:=|\.replace\(|\.assign\()\s*["'](https?:\/\/[^"']+)["']/gi;
+    while ((m = locRe.exec(unescaped)) !== null) {
+        if (isExternalUrl(m[1]))
+            return m[1];
+    }
+    var dataRe = /data-(?:url|href|link|target|src)=["']([^"']+)["']/gi;
+    while ((m = dataRe.exec(unescaped)) !== null) {
+        if (isExternalUrl(m[1]))
+            return m[1];
+    }
+    var b64Re = /atob\(\s*["']([A-Za-z0-9+\/=_-]{16,})["']\s*\)/g;
+    while ((m = b64Re.exec(unescaped)) !== null) {
+        try {
+            var decoded = b64decode(m[1].replace(/-/g, "+").replace(/_/g, "/"));
+            if (isExternalUrl(decoded))
+                return decoded;
+        }
+        catch (_) { }
+    }
+    var hrefRe = /href=["'](https?:\/\/[^"']+)["']/gi;
+    while ((m = hrefRe.exec(unescaped)) !== null) {
+        if (isExternalUrl(m[1]))
+            return m[1];
+    }
+    return null;
+}
+// /external/<código> es la pantalla de "Preparando enlace…". Su botón "SALIR AL SERVIDOR"
+// pide /external/<código>?s=1 (atributo data-go), que lleva al embed real: o redirige
+// directamente (fetch sigue la redirección y resp.url queda en el servidor final) o
+// responde con un JSON / HTML que contiene la dirección.
 function resolveExternal(code) {
     return __awaiter(this, void 0, void 0, function () {
-        var r, html, unescaped, vidara, ownHost, isExternal, dataRe, m, b64Re, decoded, hrefRe;
+        var pageUrl, resp, finalUrl, ctype, body, found, fromHtml, snippet;
         return __generator(this, function (_a) {
             switch (_a.label) {
-                case 0: return [4 /*yield*/, fetchHtml("".concat(SITE_BASE, "/external/").concat(code))];
+                case 0:
+                    pageUrl = "".concat(SITE_BASE, "/external/").concat(code);
+                    return [4 /*yield*/, fetch("".concat(pageUrl, "?s=1"), {
+                            headers: {
+                                "User-Agent": UA,
+                                "Referer": pageUrl,
+                                "Accept": "application/json, text/html;q=0.9, */*;q=0.8",
+                                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+                                "X-Requested-With": "XMLHttpRequest"
+                            }
+                        })];
                 case 1:
-                    r = _a.sent();
-                    if (!r.ok)
-                        return [2 /*return*/, null];
-                    html = r.html;
-                    unescaped = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
-                    vidara = unescaped.match(/https?:\/\/[a-z0-9.-]*vidara[a-z0-9.-]*\/e\/[A-Za-z0-9_-]+/i);
-                    if (vidara)
-                        return [2 /*return*/, vidara[0]];
-                    ownHost = getHost(SITE_BASE).replace(/^www\./, "");
-                    isExternal = function (u) { return /^https?:\/\//i.test(u) && getHost(u).indexOf(ownHost) === -1; };
-                    dataRe = /data-(?:url|href|link|target|src|go)=["']([^"']+)["']/gi;
-                    while ((m = dataRe.exec(unescaped)) !== null) {
-                        if (isExternal(m[1]))
-                            return [2 /*return*/, m[1]];
+                    resp = _a.sent();
+                    finalUrl = resp.url || "";
+                    ctype = "";
+                    try {
+                        ctype = (resp.headers && resp.headers.get && resp.headers.get("content-type")) || "";
                     }
-                    b64Re = /atob\(\s*["']([A-Za-z0-9+\/=_-]{16,})["']\s*\)/g;
-                    while ((m = b64Re.exec(unescaped)) !== null) {
-                        try {
-                            decoded = b64decode(m[1].replace(/-/g, "+").replace(/_/g, "/"));
-                            if (isExternal(decoded))
-                                return [2 /*return*/, decoded];
-                        }
-                        catch (_) { }
+                    catch (_) { }
+                    return [4 /*yield*/, resp.text()
+                        // 1) la redirección ya nos dejó en el servidor externo
+                    ];
+                case 2:
+                    body = _a.sent();
+                    // 1) la redirección ya nos dejó en el servidor externo
+                    if (isExternalUrl(finalUrl))
+                        return [2 /*return*/, finalUrl
+                            // 2) JSON con la dirección
+                        ];
+                    // 2) JSON con la dirección
+                    try {
+                        found = findUrlInJson(JSON.parse(body));
+                        if (found)
+                            return [2 /*return*/, found];
                     }
-                    hrefRe = /href=["'](https?:\/\/[^"']+)["']/gi;
-                    while ((m = hrefRe.exec(unescaped)) !== null) {
-                        if (isExternal(m[1]))
-                            return [2 /*return*/, m[1]];
+                    catch (_) { }
+                    fromHtml = findEmbedInHtml(body);
+                    if (fromHtml)
+                        return [2 /*return*/, fromHtml];
+                    if (!lastExternalDebug) {
+                        snippet = body.replace(/\s+/g, " ").slice(0, 450);
+                        lastExternalDebug = "RESPUESTA ?s=1: HTTP ".concat(resp.status, ", final=").concat(finalUrl || "-", ", tipo=").concat(ctype || "-", ", cuerpo=").concat(snippet);
                     }
-                    if (!lastExternalDebug)
-                        lastExternalDebug = summarizeHtml(html);
                     return [2 /*return*/, null];
             }
         });
