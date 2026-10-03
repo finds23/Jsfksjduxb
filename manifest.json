@@ -1,12 +1,12 @@
 {
   "name": "flpkjfjdj",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "scrapers": [
     {
       "id": "flpkjfjdj",
       "name": "flpkjfjdj",
-      "description": "Series en latino (HLS).",
-      "version": "1.0.3",
+      "description": ".",
+      "version": "1.0.5",
       "author": "-",
       "supportedTypes": [
         "tv"
