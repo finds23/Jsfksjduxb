@@ -55,11 +55,33 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
+// Decodificador base64 propio: no depende de que el entorno tenga `atob`
+// (se usa al cargar el archivo, y si faltara el plugin entero dejaría de cargar).
+function b64decode(input) {
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var str = String(input).replace(/[^A-Za-z0-9+\/]/g, "");
+    var out = "";
+    var buffer = 0;
+    var bits = 0;
+    for (var i = 0; i < str.length; i++) {
+        buffer = (buffer << 6) | chars.indexOf(str.charAt(i));
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += String.fromCharCode((buffer >> bits) & 255);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    return out;
+}
 var PROVIDER_NAME = "flpkjfjdj"; // nombre visible en los logs y en la lista de streams
-var SITE_BASE = atob("aHR0cHM6Ly93d3cuZmxpeGNvcm4ubmV0");
+var SITE_BASE = b64decode("aHR0cHM6Ly93d3cuZmxpeGNvcm4ubmV0");
 var TMDB_API_KEY = "56db0ec297530920213e1503706b81ff";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 // Switch de sources: true/false para activar o desactivar cada uno.
+// DEBUG: true muestra en la lista de streams el motivo por el que no se encontró nada.
+// Ponlo en false cuando todo funcione.
+var DEBUG = true;
 var ENABLED_SOURCES = {
     Vidara: true // HLS vía POST /api/stream
 };
@@ -154,18 +176,30 @@ function getTMDBTitles(tmdbId) {
 // ─────────────────────────────────────────────
 function fetchHtml(url) {
     return __awaiter(this, void 0, void 0, function () {
-        var resp;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
+        var resp, html, _a;
+        return __generator(this, function (_b) {
+            switch (_b.label) {
                 case 0: return [4 /*yield*/, fetch(url, {
-                        headers: { "User-Agent": UA, "Referer": "".concat(SITE_BASE, "/"), "Accept": "text/html" }
+                        headers: {
+                            "User-Agent": UA,
+                            "Referer": "".concat(SITE_BASE, "/"),
+                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language": "es-MX,es;q=0.9,en;q=0.8"
+                        }
                     })];
                 case 1:
-                    resp = _a.sent();
-                    if (!resp.ok)
-                        return [2 /*return*/, null];
+                    resp = _b.sent();
+                    if (!resp.ok) return [3 /*break*/, 3];
                     return [4 /*yield*/, resp.text()];
-                case 2: return [2 /*return*/, _a.sent()];
+                case 2:
+                    _a = _b.sent();
+                    return [3 /*break*/, 4];
+                case 3:
+                    _a = "";
+                    _b.label = 4;
+                case 4:
+                    html = _a;
+                    return [2 /*return*/, { ok: resp.ok, status: resp.status, html: html }];
             }
         });
     });
@@ -173,7 +207,7 @@ function fetchHtml(url) {
 // Prueba el slug de cada título y devuelve el primer capítulo que exista.
 function fetchEpisodePage(titles, season, episode) {
     return __awaiter(this, void 0, void 0, function () {
-        var slugs, _i, titles_1, t, s, pages;
+        var slugs, _i, titles_1, t, sl, tried, pages;
         var _this = this;
         return __generator(this, function (_a) {
             switch (_a.label) {
@@ -181,12 +215,13 @@ function fetchEpisodePage(titles, season, episode) {
                     slugs = [];
                     for (_i = 0, titles_1 = titles; _i < titles_1.length; _i++) {
                         t = titles_1[_i];
-                        s = slugify(t);
-                        if (s && slugs.indexOf(s) === -1)
-                            slugs.push(s);
+                        sl = slugify(t);
+                        if (sl && slugs.indexOf(sl) === -1)
+                            slugs.push(sl);
                     }
+                    tried = [];
                     return [4 /*yield*/, Promise.all(slugs.slice(0, 4).map(function (slug) { return __awaiter(_this, void 0, void 0, function () {
-                            var url, html, _2;
+                            var url, r, hasServers, e_1;
                             return __generator(this, function (_a) {
                                 switch (_a.label) {
                                     case 0:
@@ -194,10 +229,13 @@ function fetchEpisodePage(titles, season, episode) {
                                         url = "".concat(SITE_BASE, "/ver/").concat(slug, "/temporada-").concat(season, "/capitulo-").concat(episode, ".html");
                                         return [4 /*yield*/, fetchHtml(url)];
                                     case 1:
-                                        html = _a.sent();
-                                        return [2 /*return*/, html && html.indexOf("/player/") !== -1 ? { slug: slug, html: html } : null];
+                                        r = _a.sent();
+                                        hasServers = r.ok && (r.html.indexOf("/player/") !== -1 || r.html.indexOf("/external/") !== -1);
+                                        tried.push("".concat(slug, ": HTTP ").concat(r.status).concat(r.ok && !hasServers ? " sin servidores" : ""));
+                                        return [2 /*return*/, hasServers ? { slug: slug, html: r.html } : null];
                                     case 2:
-                                        _2 = _a.sent();
+                                        e_1 = _a.sent();
+                                        tried.push("".concat(slug, ": ").concat(e_1.message));
                                         return [2 /*return*/, null];
                                     case 3: return [2 /*return*/];
                                 }
@@ -205,7 +243,7 @@ function fetchEpisodePage(titles, season, episode) {
                         }); }))];
                 case 1:
                     pages = _a.sent();
-                    return [2 /*return*/, pages.find(function (p) { return p; }) || null];
+                    return [2 /*return*/, { page: pages.find(function (p) { return p; }) || null, tried: tried }];
             }
         });
     });
@@ -217,10 +255,12 @@ function lastMatch(re, text) {
         last = m;
     return last;
 }
-// Cada servidor "VER ONLINE" tiene un enlace /player/<código>. El idioma y la
-// calidad aparecen justo antes (imagen language/<idioma>.png y "720p").
-function parseServers(html) {
-    var re = /\/player\/([A-Za-z0-9]+)/g;
+// Cada servidor "VER ONLINE" tiene un enlace /player/<código> (y /external/<código>).
+// El idioma y la calidad aparecen justo antes (imagen language/<idioma>.png y "720p").
+// Si no hay enlaces /player/, se usan los /external/ y se descartan después los que
+// no lleven a un servidor soportado (las descargas).
+function collectCodes(html, kind) {
+    var re = new RegExp("/" + kind + "/([A-Za-z0-9]+)", "g");
     var servers = [];
     var seen = {};
     var prevIndex = 0;
@@ -242,17 +282,22 @@ function parseServers(html) {
     }
     return servers;
 }
+function parseServers(html) {
+    var online = collectCodes(html, "player");
+    return online.length > 0 ? online : collectCodes(html, "external");
+}
 // /external/<código> es la pantalla de "Preparando enlace…"; su botón apunta al embed real.
 function resolveExternal(code) {
     return __awaiter(this, void 0, void 0, function () {
-        var html, vidara, ownHost, re, m;
+        var r, html, vidara, ownHost, re, m;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0: return [4 /*yield*/, fetchHtml("".concat(SITE_BASE, "/external/").concat(code))];
                 case 1:
-                    html = _a.sent();
-                    if (!html)
+                    r = _a.sent();
+                    if (!r.ok)
                         return [2 /*return*/, null];
+                    html = r.html;
                     vidara = html.match(/https?:\/\/[a-z0-9.-]*vidara[a-z0-9.-]*\/e\/[A-Za-z0-9_-]+/i);
                     if (vidara)
                         return [2 /*return*/, vidara[0]];
@@ -354,37 +399,42 @@ function getLangLabel(lang) {
  */
 exports.getStreams = function (tmdbId, type, season, episode) {
     return __awaiter(this, void 0, void 0, function () {
-        var seasonNum, episodeNum, titles, page, servers, results, final, e_1;
+        var seasonNum, episodeNum, fail, titles, _a, page, tried, servers, errors_1, results, final, e_2;
         var _this = this;
-        return __generator(this, function (_a) {
-            switch (_a.label) {
+        return __generator(this, function (_b) {
+            switch (_b.label) {
                 case 0:
                     if (!tmdbId || type !== "tv")
                         return [2 /*return*/, []];
                     seasonNum = season ? Number(season) : 1;
                     episodeNum = episode !== undefined && episode !== null ? Number(episode) : 1;
                     console.log("[".concat(PROVIDER_NAME, "] Buscando: TMDB ").concat(tmdbId, " S").concat(seasonNum, "E").concat(episodeNum));
-                    _a.label = 1;
+                    fail = function (reason) {
+                        console.warn("[".concat(PROVIDER_NAME, "] ").concat(reason));
+                        return DEBUG
+                            ? [{ name: PROVIDER_NAME, title: "", url: "https://example.invalid/debug", quality: "\u26A0 ".concat(reason) }]
+                            : [];
+                    };
+                    _b.label = 1;
                 case 1:
-                    _a.trys.push([1, 5, , 6]);
+                    _b.trys.push([1, 5, , 6]);
                     return [4 /*yield*/, getTMDBTitles(tmdbId)];
                 case 2:
-                    titles = _a.sent();
+                    titles = _b.sent();
                     if (titles.length === 0)
-                        return [2 /*return*/, []];
+                        return [2 /*return*/, fail("TMDB no devolvi\u00F3 t\u00EDtulo (id ".concat(tmdbId, ")"))];
                     return [4 /*yield*/, fetchEpisodePage(titles, seasonNum, episodeNum)];
                 case 3:
-                    page = _a.sent();
-                    if (!page) {
-                        console.log("[".concat(PROVIDER_NAME, "] Sin cap\u00EDtulo para \"").concat(titles[0], "\""));
-                        return [2 /*return*/, []];
-                    }
+                    _a = _b.sent(), page = _a.page, tried = _a.tried;
+                    if (!page)
+                        return [2 /*return*/, fail("Sin cap\u00EDtulo. Intentos: ".concat(tried.join(" | ") || "ninguno"))];
                     console.log("[".concat(PROVIDER_NAME, "] Cap\u00EDtulo encontrado: ").concat(page.slug));
                     servers = parseServers(page.html);
                     if (servers.length === 0)
-                        return [2 /*return*/, []];
+                        return [2 /*return*/, fail("Cap\u00EDtulo ".concat(page.slug, " sin c\u00F3digos de servidor"))];
+                    errors_1 = [];
                     return [4 /*yield*/, Promise.all(servers.map(function (server) { return __awaiter(_this, void 0, void 0, function () {
-                            var embedUrl, sourceKey, source, resolved, e_2;
+                            var embedUrl, sourceKey, source, resolved, e_3;
                             return __generator(this, function (_a) {
                                 switch (_a.label) {
                                     case 0:
@@ -392,33 +442,39 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                                         return [4 /*yield*/, resolveExternal(server.code)];
                                     case 1:
                                         embedUrl = _a.sent();
-                                        if (!embedUrl)
+                                        if (!embedUrl) {
+                                            errors_1.push("".concat(server.code, ": sin enlace"));
                                             return [2 /*return*/, null];
+                                        }
                                         sourceKey = detectSource(embedUrl);
-                                        if (!sourceKey || !SOURCE_EXTRACTORS[sourceKey])
+                                        if (!sourceKey || !SOURCE_EXTRACTORS[sourceKey]) {
+                                            errors_1.push("".concat(server.code, ": ").concat(getHost(embedUrl), " no soportado"));
                                             return [2 /*return*/, null];
+                                        }
                                         source = SOURCE_EXTRACTORS[sourceKey];
                                         return [4 /*yield*/, source.extract(embedUrl)];
                                     case 2:
                                         resolved = _a.sent();
                                         return [2 /*return*/, __assign({ name: PROVIDER_NAME, title: "", url: resolved.url, quality: "\uD83D\uDCFA ".concat(source.label, " (").concat(source.format, ")\n").concat(server.quality, " | WEB-DL\n").concat(getLangLabel(server.lang)), headers: resolved.headers }, (resolved.type ? { type: resolved.type } : {}))];
                                     case 3:
-                                        e_2 = _a.sent();
-                                        console.warn("[".concat(PROVIDER_NAME, "] Fall\u00F3 un servidor: ").concat(e_2.message));
+                                        e_3 = _a.sent();
+                                        errors_1.push("".concat(server.code, ": ").concat(e_3.message));
+                                        console.warn("[".concat(PROVIDER_NAME, "] Fall\u00F3 un servidor: ").concat(e_3.message));
                                         return [2 /*return*/, null];
                                     case 4: return [2 /*return*/];
                                 }
                             });
                         }); }))];
                 case 4:
-                    results = _a.sent();
+                    results = _b.sent();
                     final = results.filter(Boolean);
+                    if (final.length === 0)
+                        return [2 /*return*/, fail("Sin streams. ".concat(errors_1.join(" | ")))];
                     console.log("[".concat(PROVIDER_NAME, "] \u2713 ").concat(final.length, " streams devueltos"));
                     return [2 /*return*/, final];
                 case 5:
-                    e_1 = _a.sent();
-                    console.error("[".concat(PROVIDER_NAME, "] Error: ").concat(e_1.message));
-                    return [2 /*return*/, []];
+                    e_2 = _b.sent();
+                    return [2 /*return*/, fail("Error: ".concat(e_2.message))];
                 case 6: return [2 /*return*/];
             }
         });
