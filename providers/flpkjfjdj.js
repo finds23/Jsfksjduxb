@@ -81,7 +81,10 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 // Switch de sources: true/false para activar o desactivar cada uno.
 // DEBUG: true muestra en la lista de streams el motivo por el que no se encontró nada.
 // Ponlo en false cuando todo funcione.
-var DEBUG = true;
+var DEBUG = false;
+// SOLO_LATINO: true descarta los enlaces subtitulados (y cualquier otro idioma) y deja
+// solo los que la página marca como español latino.
+var SOLO_LATINO = true;
 var ENABLED_SOURCES = {
     Vidara: true // HLS vía POST /api/stream
 };
@@ -491,7 +494,7 @@ function getLangLabel(lang) {
  */
 exports.getStreams = function (tmdbId, type, season, episode) {
     return __awaiter(this, void 0, void 0, function () {
-        var seasonNum, episodeNum, fail, titles, _a, page, tried, servers, errors_1, results, final, sinEnlace, otros, e_2;
+        var seasonNum, episodeNum, fail, titles, _a, page, tried, allServers, servers, idiomas, errors_1, results, final, sinEnlace, otros, e_2;
         var _this = this;
         return __generator(this, function (_b) {
             switch (_b.label) {
@@ -521,9 +524,14 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                     if (!page)
                         return [2 /*return*/, fail("Sin cap\u00EDtulo. Intentos: ".concat(tried.join(" | ") || "ninguno"))];
                     console.log("[".concat(PROVIDER_NAME, "] Cap\u00EDtulo encontrado: ").concat(page.slug));
-                    servers = parseServers(page.html);
-                    if (servers.length === 0)
+                    allServers = parseServers(page.html);
+                    if (allServers.length === 0)
                         return [2 /*return*/, fail("Cap\u00EDtulo ".concat(page.slug, " sin c\u00F3digos de servidor"))];
+                    servers = SOLO_LATINO ? allServers.filter(function (sv) { return sv.lang.indexOf("lat") !== -1; }) : allServers;
+                    if (servers.length === 0) {
+                        idiomas = Array.from(new Set(allServers.map(function (sv) { return sv.lang; }))).join(", ");
+                        return [2 /*return*/, fail("Sin enlaces en latino (idiomas encontrados: ".concat(idiomas, ")"))];
+                    }
                     lastExternalDebug = "";
                     errors_1 = [];
                     return [4 /*yield*/, Promise.all(servers.map(function (server) { return __awaiter(_this, void 0, void 0, function () {
