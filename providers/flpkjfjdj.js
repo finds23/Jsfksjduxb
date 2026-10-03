@@ -286,10 +286,20 @@ function parseServers(html) {
     var online = collectCodes(html, "player");
     return online.length > 0 ? online : collectCodes(html, "external");
 }
+// Resumen del HTML de la pantalla intermedia (para el modo DEBUG): enlaces y scripts.
+var lastExternalDebug = "";
+function summarizeHtml(html) {
+    var clean = html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<svg[\s\S]*?<\/svg>/gi, "");
+    var anchors = (clean.match(/<(?:a|button)\b[^>]*>/gi) || []).join(" ").replace(/\s+/g, " ").slice(0, 700);
+    var scripts = (clean.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [])
+        .filter(function (t) { return t.indexOf("gtag") === -1 && t.indexOf("googletagmanager") === -1; })
+        .join(" ").replace(/\s+/g, " ").slice(0, 1100);
+    return "ENLACES: ".concat(anchors, " SCRIPTS: ").concat(scripts);
+}
 // /external/<código> es la pantalla de "Preparando enlace…"; su botón apunta al embed real.
 function resolveExternal(code) {
     return __awaiter(this, void 0, void 0, function () {
-        var r, html, vidara, ownHost, re, m;
+        var r, html, unescaped, vidara, ownHost, isExternal, dataRe, m, b64Re, decoded, hrefRe;
         return __generator(this, function (_a) {
             switch (_a.label) {
                 case 0: return [4 /*yield*/, fetchHtml("".concat(SITE_BASE, "/external/").concat(code))];
@@ -298,15 +308,33 @@ function resolveExternal(code) {
                     if (!r.ok)
                         return [2 /*return*/, null];
                     html = r.html;
-                    vidara = html.match(/https?:\/\/[a-z0-9.-]*vidara[a-z0-9.-]*\/e\/[A-Za-z0-9_-]+/i);
+                    unescaped = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
+                    vidara = unescaped.match(/https?:\/\/[a-z0-9.-]*vidara[a-z0-9.-]*\/e\/[A-Za-z0-9_-]+/i);
                     if (vidara)
                         return [2 /*return*/, vidara[0]];
                     ownHost = getHost(SITE_BASE).replace(/^www\./, "");
-                    re = /href=["'](https?:\/\/[^"']+)["']/gi;
-                    while ((m = re.exec(html)) !== null) {
-                        if (getHost(m[1]).indexOf(ownHost) === -1)
+                    isExternal = function (u) { return /^https?:\/\//i.test(u) && getHost(u).indexOf(ownHost) === -1; };
+                    dataRe = /data-(?:url|href|link|target|src|go)=["']([^"']+)["']/gi;
+                    while ((m = dataRe.exec(unescaped)) !== null) {
+                        if (isExternal(m[1]))
                             return [2 /*return*/, m[1]];
                     }
+                    b64Re = /atob\(\s*["']([A-Za-z0-9+\/=_-]{16,})["']\s*\)/g;
+                    while ((m = b64Re.exec(unescaped)) !== null) {
+                        try {
+                            decoded = b64decode(m[1].replace(/-/g, "+").replace(/_/g, "/"));
+                            if (isExternal(decoded))
+                                return [2 /*return*/, decoded];
+                        }
+                        catch (_) { }
+                    }
+                    hrefRe = /href=["'](https?:\/\/[^"']+)["']/gi;
+                    while ((m = hrefRe.exec(unescaped)) !== null) {
+                        if (isExternal(m[1]))
+                            return [2 /*return*/, m[1]];
+                    }
+                    if (!lastExternalDebug)
+                        lastExternalDebug = summarizeHtml(html);
                     return [2 /*return*/, null];
             }
         });
@@ -399,7 +427,7 @@ function getLangLabel(lang) {
  */
 exports.getStreams = function (tmdbId, type, season, episode) {
     return __awaiter(this, void 0, void 0, function () {
-        var seasonNum, episodeNum, fail, titles, _a, page, tried, servers, errors_1, results, final, e_2;
+        var seasonNum, episodeNum, fail, titles, _a, page, tried, servers, errors_1, results, final, sinEnlace, otros, e_2;
         var _this = this;
         return __generator(this, function (_b) {
             switch (_b.label) {
@@ -432,6 +460,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                     servers = parseServers(page.html);
                     if (servers.length === 0)
                         return [2 /*return*/, fail("Cap\u00EDtulo ".concat(page.slug, " sin c\u00F3digos de servidor"))];
+                    lastExternalDebug = "";
                     errors_1 = [];
                     return [4 /*yield*/, Promise.all(servers.map(function (server) { return __awaiter(_this, void 0, void 0, function () {
                             var embedUrl, sourceKey, source, resolved, e_3;
@@ -468,8 +497,11 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                 case 4:
                     results = _b.sent();
                     final = results.filter(Boolean);
-                    if (final.length === 0)
-                        return [2 /*return*/, fail("Sin streams. ".concat(errors_1.join(" | ")))];
+                    if (final.length === 0) {
+                        sinEnlace = errors_1.filter(function (e) { return e.indexOf("sin enlace") !== -1; }).length;
+                        otros = errors_1.filter(function (e) { return e.indexOf("sin enlace") === -1; }).slice(0, 3);
+                        return [2 /*return*/, fail("Sin streams. ".concat(servers.length, " c\u00F3digos, ").concat(sinEnlace, " sin enlace. ").concat(otros.join(" | "), " ").concat(lastExternalDebug).trim())];
+                    }
                     console.log("[".concat(PROVIDER_NAME, "] \u2713 ").concat(final.length, " streams devueltos"));
                     return [2 /*return*/, final];
                 case 5:
