@@ -74,7 +74,7 @@ function b64decode(input) {
     }
     return out;
 }
-var PROVIDER_NAME = "flpkjfjdj"; // nombre visible en los logs y en la lista de streams
+var PROVIDER_NAME = "frprpkjfjdj"; // nombre visible en los logs y en la lista de streams
 var SITE_BASE = b64decode("aHR0cHM6Ly93d3cuZmxpeGNvcm4ubmV0");
 var TMDB_API_KEY = "56db0ec297530920213e1503706b81ff";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
