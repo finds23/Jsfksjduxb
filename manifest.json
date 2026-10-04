@@ -1,17 +1,17 @@
 {
-  "name": "flpkjfjdj",
+  "name": "frprpkjfjdj",
   "version": "1.0.5",
   "scrapers": [
     {
-      "id": "flpkjfjdj",
-      "name": "flpkjfjdj",
+      "id": "frprpkjfjdj",
+      "name": "frprpkjfjdj",
       "description": ".",
       "version": "1.0.5",
       "author": "-",
       "supportedTypes": [
         "tv"
       ],
-      "filename": "providers/flpkjfjdj.js",
+      "filename": "providers/frprpkjfjdj.js",
       "enabled": true,
       "contentLanguage": [
         "es"
