@@ -37,17 +37,20 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 // DEBUG: true agrega a la lista de streams una tarjeta "⚠" con los servidores que
 // fallaron o no están soportados (muestra el host). Ponlo en false cuando todo funcione.
 var DEBUG = true;
+// PROBE: con DEBUG, además prueba el m3u8 (master -> variante -> segmento). Retrasa la respuesta, déjalo en false salvo para diagnosticar.
+var PROBE = false;
+var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
 // SOLO_LATINO: true descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
 // Switch de sources
 var ENABLED_SOURCES = {
-    Vidara: true,    // HLS vía POST /api/stream
+    Vidara: true,    // HLS vía POST /api/stream; en unas series funciona y en otras no (en T1E1 de Un trabajo maldito da 404)
     Voe: true,       // HLS/MP4 (a veces pide verificación anti-bot y no funciona)
     Streamwish: true, // Streamwish / Vidhide / Filelions / Lulustream (script empaquetado con hls2/hls3/hls4)
     Streamtape: true, // MP4; extractor portado de animejara.js (probado en JKAnime)
-    Byse: true,       // Byse / Filemoon (API cifrada AES-GCM, necesita crypto-js); sin probar
+    Byse: false,      // desactivado: el playback responde 405 y la página pide doble clic (anti-bot)
     Vidmoly: true,    // sin probar
-    Dood: true        // Dsvplay y otros clones de Doodstream (/pass_md5); sin probar
+    Dood: false       // desactivado: Dsvplay devuelve la página vacía y tampoco reproduce en la página
 };
 var CryptoJS = null;
 try { CryptoJS = require("crypto-js"); } catch (_) { CryptoJS = null; }
@@ -413,7 +416,8 @@ function unpackPacked(html) {
     return p.replace(/\b\w+\b/g, function (w) { return d[w] || w; });
 }
 function extractWish(embedUrl) {
-    return fetchText(embedUrl, embedUrl).then(function (r) {
+    // Se pide como lo haría el navegador del celular: UA móvil y Referer de flixcorn (el iframe vive ahí)
+    return fetchText(embedUrl, SITE_BASE + "/", { "User-Agent": MOBILE_UA, "Accept-Language": "es-419,es;q=0.9" }).then(function (r) {
         var origin = getOrigin(r.url || embedUrl);
         var js = r.html;
         var unpacked = unpackPacked(r.html);
@@ -427,11 +431,18 @@ function extractWish(embedUrl) {
             u = absUrl(u, origin);
             if (!/^https?:/i.test(u) || seen[u]) return;
             seen[u] = true;
+            // Dos tarjetas con el mismo enlace y distintos encabezados, para ver cuál reproduce
             out.push({
                 url: u,
-                headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": UA },
+                headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": MOBILE_UA, "Accept": "*/*", "Accept-Language": "es-419,es;q=0.9" },
                 type: "hls",
                 label: name + " " + label
+            });
+            out.push({
+                url: u,
+                headers: { "Referer": origin + "/", "User-Agent": MOBILE_UA },
+                type: "hls",
+                label: name + " " + label + " · sin Origin"
             });
         }
         var re = /["']?(hls\d?)["']?\s*:\s*["']([^"']+)["']/g;
@@ -447,7 +458,7 @@ function extractWish(embedUrl) {
             while ((m = any.exec(js)) !== null) add("hls", m[1]);
         }
         if (out.length === 0) throw Error(name + ": no se encontró ningún hls (" + describePage(r.html) + ")");
-        if (!DEBUG) return out;
+        if (!DEBUG || !PROBE) return out;
         // Con DEBUG: probar cada enlace (master, variante y primer segmento) y mostrar el resultado en la tarjeta
         return Promise.all(out.slice(0, 3).map(function (o) {
             return probeHls(o).then(function (n) { o.note = n; });
@@ -537,7 +548,8 @@ function extractByse(embedUrl) {
 function extractVidmoly(embedUrl) {
     var origin = getOrigin(embedUrl);
     var id = embedId(embedUrl);
-    var cands = [embedUrl, origin + "/embed-" + id + ".html", origin + "/w/" + id]
+    // /v/<id> es una página Nuxt cuyo iframe apunta a vidmoly.biz/embed-<id>.html: se pide ese embed primero
+    var cands = ["https://vidmoly.biz/embed-" + id + ".html", origin + "/embed-" + id + ".html", embedUrl, "https://vidmoly.me/embed-" + id + ".html", origin + "/w/" + id]
         .filter(function (v, i, a) { return a.indexOf(v) === i; });
     var lastErr = null;
     function tryNext(i) {
