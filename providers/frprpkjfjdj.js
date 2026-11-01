@@ -313,7 +313,11 @@ function extractVidara(embedUrl) {
         headers: { "Content-Type": "application/json", "User-Agent": UA, "Referer": embedUrl, "Origin": origin },
         body: JSON.stringify({ filecode: filecode, device: "web" })
     }).then(function (resp) {
-        if (!resp.ok) throw Error("HTTP error! Status: " + resp.status);
+        if (!resp.ok) {
+            return vidaraProbe(embedUrl).then(function (info) {
+                throw Error("Vidara API HTTP " + resp.status + " | " + info);
+            });
+        }
         return resp.json();
     }).then(function (data) {
         if (!data.streaming_url) throw Error("Vidara: la API no devolvió streaming_url");
@@ -442,8 +446,12 @@ function extractWish(embedUrl) {
             var any = /["'](https?:\/\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*|\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*)["']/g;
             while ((m = any.exec(js)) !== null) add("hls", m[1]);
         }
-        if (out.length === 0) throw Error(name + ": no se encontró ningún hls");
-        return out;
+        if (out.length === 0) throw Error(name + ": no se encontró ningún hls (" + describePage(r.html) + ")");
+        if (!DEBUG) return out;
+        // Con DEBUG: probar cada enlace (master, variante y primer segmento) y mostrar el resultado en la tarjeta
+        return Promise.all(out.slice(0, 3).map(function (o) {
+            return probeHls(o).then(function (n) { o.note = n; });
+        })).then(function () { return out; });
     });
 }
 
@@ -509,7 +517,7 @@ function extractByse(embedUrl) {
         if (!frame) throw Error("Byse: sin embed_frame_url");
         var fbase = getOrigin(frame);
         var fcode = embedId(frame);
-        return getJson(fbase + "/api/videos/" + fcode + "/embed/playback", { "Accept": "*/*", "Referer": frame, "X-Embed-Parent": embedUrl, "Accept-Language": "en-US,en;q=0.5" });
+        return bysePlayback(fbase + "/api/videos/" + fcode + "/embed/playback", frame, embedUrl);
     }).then(function (play) {
         var p = play && play.playback;
         if (!p || !p.key_parts || !p.payload || !p.iv) throw Error("Byse: playback sin datos");
@@ -554,6 +562,108 @@ function extractVidmoly(embedUrl) {
     return tryNext(0);
 }
 
+// ── Diagnóstico (solo se usa al fallar o con DEBUG) ──
+function describePage(html) {
+    var t = /<title[^>]*>([^<]*)/i.exec(html || "");
+    var scripts = [];
+    var re = /<script[^>]+src=["']([^"']+)["']/gi, m;
+    while ((m = re.exec(html || "")) !== null && scripts.length < 2) scripts.push(m[1].split("/").pop().slice(0, 30));
+    return (html || "").length + "b" +
+        ", título=" + (t ? t[1].trim().slice(0, 25) : "?") +
+        ", m3u8=" + (/m3u8/.test(html) ? "sí" : "no") +
+        ", packer=" + (/eval\(function\(p,a,c,k,e,/.test(html) ? "sí" : "no") +
+        ", file:=" + (/file\s*:/.test(html) ? "sí" : "no") +
+        (scripts.length ? ", scripts=" + scripts.join(",") : "");
+}
+// Busca un video en un HTML genérico (script empaquetado, file:"...", cualquier .m3u8/.mp4)
+function findMedia(html, origin) {
+    var js = html;
+    var un = unpackPacked(js);
+    if (un) js = un + "\n" + js;
+    js = js.replace(/\\\//g, "/");
+    var m = js.match(/file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i) ||
+        js.match(/["'](https?:\/\/[^"'\s\\<>]+\.(?:m3u8|mp4)[^"'\s\\<>]*)["']/i);
+    if (!m) return null;
+    var u = absUrl(m[1], origin);
+    return /^https?:/i.test(u) ? { url: u, type: /\.m3u8/i.test(u) ? "hls" : "mp4" } : null;
+}
+// Vidara: si la API falla, mira qué rutas /api/ trae la página y su script para saber cuál cambió
+function vidaraProbe(embedUrl) {
+    var origin = getOrigin(embedUrl);
+    function apis(text) {
+        var found = [], m, re = /["'`](\/api\/[A-Za-z0-9_\/.-]{2,40})/g;
+        while ((m = re.exec(text)) !== null) if (found.indexOf(m[1]) === -1 && found.length < 6) found.push(m[1]);
+        return found;
+    }
+    return fetchText(embedUrl, SITE_BASE + "/").then(function (r) {
+        var info = "página " + r.status + " " + describePage(r.html) + "; api en html: " + (apis(r.html).join(",") || "ninguna");
+        var sm = /<script[^>]+src=["']([^"']+)["']/i.exec(r.html);
+        if (!sm) return info;
+        return fetchText(absUrl(sm[1], r.url || embedUrl), embedUrl).then(function (js) {
+            var fe = [], fm, fre = /fetch\(\s*([^)]{1,60})\)/g;
+            while ((fm = fre.exec(js.html)) !== null && fe.length < 2) fe.push(fm[1].replace(/\s+/g, " "));
+            return info + "; api en js: " + (apis(js.html).join(",") || "ninguna") + (fe.length ? "; fetch: " + fe.join(" ~ ") : "");
+        }, function () { return info; });
+    }).then(function (s) { return s.slice(0, 330); }, function (e) { return "sin detalle (" + e.message + ")"; });
+}
+// Prueba el HLS con los mismos encabezados: master -> variante -> primer segmento
+function hlsResolve(base, ref) {
+    if (/^https?:\/\//i.test(ref)) return ref;
+    if (ref.charAt(0) === "/") return getOrigin(base) + ref;
+    return base.split(/[?#]/)[0].replace(/[^\/]*$/, "") + ref;
+}
+function probeHls(item) {
+    function get(u, extra) {
+        var h = {};
+        for (var k in item.headers) h[k] = item.headers[k];
+        if (extra) for (var k2 in extra) h[k2] = extra[k2];
+        return fetch(u, { headers: h });
+    }
+    var note = "";
+    return get(item.url).then(function (r) {
+        note = "master " + r.status;
+        return r.text().then(function (t) {
+            if (!r.ok) { note += " " + t.replace(/\s+/g, " ").slice(0, 70); return null; }
+            var lines = t.split(/\r?\n/).map(function (l) { return l.trim(); });
+            var variant = null;
+            for (var i = 0; i < lines.length; i++) {
+                if (lines[i].indexOf("#EXT-X-STREAM-INF") === 0) { variant = lines[i + 1]; break; }
+            }
+            if (variant) {
+                var vu = hlsResolve(item.url, variant);
+                return get(vu).then(function (vr) {
+                    note += " | variante " + vr.status;
+                    return vr.ok ? vr.text().then(function (vt) { return { base: vu, text: vt }; }) : null;
+                });
+            }
+            return { base: item.url, text: t };
+        });
+    }).then(function (pl) {
+        if (!pl) return;
+        var seg = null;
+        pl.text.split(/\r?\n/).forEach(function (l) { l = l.trim(); if (!seg && l && l.charAt(0) !== "#") seg = l; });
+        if (!seg) { note += " | sin segmentos"; return; }
+        return get(hlsResolve(pl.base, seg), { "Range": "bytes=0-1" }).then(function (sr) { note += " | segmento " + sr.status; });
+    }).then(function () { return note; }, function (e) { return note + " | error " + e.message; });
+}
+// Byse: el playback ahora puede exigir POST (con GET responde 405)
+function bysePlayback(url, frame, embedUrl) {
+    var h = { "User-Agent": UA, "Accept": "*/*", "Referer": frame, "X-Embed-Parent": embedUrl, "Accept-Language": "en-US,en;q=0.5" };
+    return fetch(url, { headers: h }).then(function (r) {
+        if (r.ok) return r.json();
+        var first = r.status;
+        var hp = {};
+        for (var k in h) hp[k] = h[k];
+        hp["Content-Type"] = "application/json";
+        return fetch(url, { method: "POST", headers: hp, body: "{}" }).then(function (r2) {
+            return r2.text().then(function (t) {
+                if (r2.ok) { try { return JSON.parse(t); } catch (_) { } }
+                throw Error("Byse playback: GET " + first + ", POST " + r2.status + " " + t.replace(/\s+/g, " ").slice(0, 90));
+            });
+        });
+    });
+}
+
 // Dsvplay y clones de Doodstream (sin probar): /pass_md5/<ruta>/<token> devuelve la base del MP4
 function extractDood(embedUrl) {
     var origin = getOrigin(embedUrl);
@@ -561,7 +671,14 @@ function extractDood(embedUrl) {
     var pageUrl = origin + "/e/" + id;
     return fetchText(pageUrl, SITE_BASE + "/").then(function (r) {
         var pm = r.html.match(/\/pass_md5\/([A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)/);
-        if (!pm) throw Error("Dood: sin pass_md5" + (/captcha|human|verif/i.test(r.html) ? " (pide verificación)" : ""));
+        if (!pm) {
+            var g = findMedia(r.html, origin);
+            if (g) {
+                var go = { url: g.url, headers: { "Referer": origin + "/", "User-Agent": UA }, type: g.type };
+                return [go];
+            }
+            throw Error("Dsvplay: sin pass_md5 ni video (" + describePage(r.html) + ")");
+        }
         var token = pm[1].split("/").pop();
         var ref = getOrigin(r.url || pageUrl);
         return fetchText(ref + "/pass_md5/" + pm[1], pageUrl).then(function (b) {
@@ -657,7 +774,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                                 url: resolved.url,
                                 quality: "📺 " + (resolved.label || source.label) + " (" + (resolved.format || source.format) + ")\n" +
                                     server.quality + " | WEB-DL\n" + getLangLabel(server.lang) +
-                                    (DEBUG ? "\n🔗 " + String(resolved.url).slice(0, 150) : ""),
+                                    (DEBUG ? "\n🔗 " + String(resolved.url).slice(0, 150) + (resolved.note ? "\n🔎 " + resolved.note : "") : ""),
                                 headers: resolved.headers
                             };
                             if (resolved.type) s.type = resolved.type;
