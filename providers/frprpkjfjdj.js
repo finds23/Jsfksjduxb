@@ -36,7 +36,7 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 
 // DEBUG: true agrega a la lista de streams una tarjeta "⚠" con los servidores que
 // fallaron o no están soportados (muestra el host). Ponlo en false cuando todo funcione.
-var DEBUG = true;
+var DEBUG = false;
 // PROBE: con DEBUG, además prueba el m3u8 (master -> variante -> segmento). Retrasa la respuesta, déjalo en false salvo para diagnosticar.
 var PROBE = false;
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
@@ -49,7 +49,7 @@ var ENABLED_SOURCES = {
     Streamwish: true, // Streamwish / Vidhide / Filelions / Lulustream (script empaquetado con hls2/hls3/hls4)
     Streamtape: true, // MP4; extractor portado de animejara.js (probado en JKAnime)
     Byse: false,      // desactivado: el playback responde 405 y la página pide doble clic (anti-bot)
-    Vidmoly: true,    // sin probar
+    Vidmoly: false,   // fuera por ahora: abre siempre en externo; sin probar
     Dood: false       // desactivado: Dsvplay devuelve la página vacía y tampoco reproduce en la página
 };
 var CryptoJS = null;
@@ -316,11 +316,7 @@ function extractVidara(embedUrl) {
         headers: { "Content-Type": "application/json", "User-Agent": UA, "Referer": embedUrl, "Origin": origin },
         body: JSON.stringify({ filecode: filecode, device: "web" })
     }).then(function (resp) {
-        if (!resp.ok) {
-            return vidaraProbe(embedUrl).then(function (info) {
-                throw Error("Vidara API HTTP " + resp.status + " | " + info);
-            });
-        }
+        if (!resp.ok) throw Error("Vidara API HTTP " + resp.status + " (el archivo puede no estar en Vidara)");
         return resp.json();
     }).then(function (data) {
         if (!data.streaming_url) throw Error("Vidara: la API no devolvió streaming_url");
@@ -431,18 +427,12 @@ function extractWish(embedUrl) {
             u = absUrl(u, origin);
             if (!/^https?:/i.test(u) || seen[u]) return;
             seen[u] = true;
-            // Dos tarjetas con el mismo enlace y distintos encabezados, para ver cuál reproduce
+            // Encabezados que sí reproducen en Nuvio: Referer y Origin del embed + UA móvil (probado con Lulustream)
             out.push({
                 url: u,
                 headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": MOBILE_UA, "Accept": "*/*", "Accept-Language": "es-419,es;q=0.9" },
                 type: "hls",
                 label: name + " " + label
-            });
-            out.push({
-                url: u,
-                headers: { "Referer": origin + "/", "User-Agent": MOBILE_UA },
-                type: "hls",
-                label: name + " " + label + " · sin Origin"
             });
         }
         var re = /["']?(hls\d?)["']?\s*:\s*["']([^"']+)["']/g;
