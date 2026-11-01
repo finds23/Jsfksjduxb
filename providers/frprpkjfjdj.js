@@ -636,7 +636,9 @@ exports.getStreams = function (tmdbId, type, season, episode) {
 
             var errors = [];
             return Promise.all(servers.map(function (server) {
+                var embedSeen = "";
                 return resolveServer(server.code, page.url).then(function (embedUrl) {
+                    embedSeen = embedUrl || "";
                     if (!embedUrl) {
                         errors.push(server.code + ": sin embed");
                         return [];
@@ -654,7 +656,8 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                                 title: "",
                                 url: resolved.url,
                                 quality: "📺 " + (resolved.label || source.label) + " (" + (resolved.format || source.format) + ")\n" +
-                                    server.quality + " | WEB-DL\n" + getLangLabel(server.lang),
+                                    server.quality + " | WEB-DL\n" + getLangLabel(server.lang) +
+                                    (DEBUG ? "\n🔗 " + String(resolved.url).slice(0, 150) : ""),
                                 headers: resolved.headers
                             };
                             if (resolved.type) s.type = resolved.type;
@@ -662,7 +665,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                         });
                     });
                 }).catch(function (e) {
-                    errors.push(server.code + ": " + e.message);
+                    errors.push(server.code + ": " + e.message + (embedSeen ? " [" + embedSeen + "]" : ""));
                     console.warn("[" + PROVIDER_NAME + "] Falló un servidor: " + e.message);
                     return [];
                 });
@@ -673,7 +676,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                     return fail("Sin streams. " + servers.length + " códigos. " + errors.slice(0, 4).join(" | "));
                 }
                 console.log("[" + PROVIDER_NAME + "] ✓ " + final.length + " streams devueltos");
-                if (DEBUG && errors.length > 0) final.push(debugCard(errors.slice(0, 4).join(" | ")));
+                if (DEBUG && errors.length > 0) final.push(debugCard(errors.slice(0, 8).join(" | ")));
                 return final;
             });
         });
