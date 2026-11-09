@@ -1,5 +1,5 @@
 "use strict";
-// providers/frprpkjfjdj.js  (v2: varios reproductores)
+// providers/frprpkjfjdj.js  (v3: más títulos de TMDB y más slugs candidatos)
 // Provider Nuvio (series) para un sitio con URLs del tipo
 //   /ver/<serie>/temporada-N/capitulo-M.html
 //
@@ -42,6 +42,8 @@ var PROBE = false;
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
 // SOLO_LATINO: true descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
+// Máximo de slugs distintos que se prueban contra el sitio
+var MAX_SLUGS = 10;
 // Switch de sources
 var ENABLED_SOURCES = {
     Vidara: true,    // HLS vía POST /api/stream; en unas series funciona y en otras no (en T1E1 de Un trabajo maldito da 404)
@@ -101,27 +103,41 @@ function fetchText(url, referer, extraHeaders) {
 // ─────────────────────────────────────────────
 // TMDB -> títulos
 // ─────────────────────────────────────────────
+// Trae el título en varios idiomas y los títulos alternativos (países hispanohablantes),
+// porque el sitio puede usar un nombre distinto al de TMDB en es-MX/en-US
+// (ej. "Doctor X: La era de la mafia blanca").
 function getTMDBTitles(tmdbId) {
-    function fetchLang(lang) {
-        var url = "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=" + lang;
+    function fetchJson(url) {
         return fetch(url, { headers: { "User-Agent": UA } })
             .then(function (resp) { return resp.ok ? resp.json() : null; })
             .then(function (data) { return data && data.success === false ? null : data; })
             .catch(function () { return null; });
     }
-    return Promise.all([fetchLang("es-MX"), fetchLang("en-US")]).then(function (r) {
+    function fetchLang(lang) {
+        return fetchJson("https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=" + lang);
+    }
+    var langs = ["es-MX", "es-ES", "es-419", "es-AR", "en-US"];
+    var altUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/alternative_titles?api_key=" + TMDB_API_KEY;
+    return Promise.all(langs.map(fetchLang).concat([fetchJson(altUrl)])).then(function (r) {
         var titles = [];
         var seen = {};
-        [r[0], r[1]].forEach(function (d) {
+        function addTitle(t) {
+            if (!t) return;
+            var key = slugify(t);
+            if (!key || seen[key]) return;
+            seen[key] = true;
+            titles.push(t);
+        }
+        r.slice(0, langs.length).forEach(function (d) {
             if (!d) return;
-            [d.name, d.original_name].forEach(function (t) {
-                if (!t) return;
-                var key = slugify(t);
-                if (!key || seen[key]) return;
-                seen[key] = true;
-                titles.push(t);
-            });
+            addTitle(d.name);
+            addTitle(d.original_name);
         });
+        // Títulos alternativos: primero los de países hispanohablantes
+        var alt = (r[langs.length] && r[langs.length].results) || [];
+        var latam = /^(MX|ES|AR|CO|CL|PE|VE|US)$/;
+        alt.filter(function (a) { return latam.test(a.iso_3166_1); })
+            .forEach(function (a) { addTitle(a.title); });
         return titles;
     });
 }
@@ -136,7 +152,7 @@ function fetchEpisodePage(titles, season, episode) {
         if (sl && slugs.indexOf(sl) === -1) slugs.push(sl);
     });
     var tried = [];
-    return Promise.all(slugs.slice(0, 4).map(function (slug) {
+    return Promise.all(slugs.slice(0, MAX_SLUGS).map(function (slug) {
         var url = SITE_BASE + "/ver/" + slug + "/temporada-" + season + "/capitulo-" + episode + ".html";
         return fetchText(url).then(function (r) {
             var hasServers = r.ok && (r.html.indexOf("/player/") !== -1 || r.html.indexOf("/external/") !== -1);
@@ -525,7 +541,7 @@ function extractByse(embedUrl) {
         var key = b64uWords(p.key_parts[0]).concat(b64uWords(p.key_parts[1]));
         var clear = CryptoJS.AES.decrypt({ ciphertext: b64uWords(p.payload) }, key,
             { iv: b64uWords(p.iv), mode: CryptoJS.mode.GCM, padding: CryptoJS.pad.NoPadding }).toString(CryptoJS.enc.Utf8);
-        var data = JSON.parse(clear.replace(/^﻿/, ""));
+        var data = JSON.parse(clear.replace(/^\uFEFF/, ""));
         var src = data.sources && data.sources[0];
         if (!src || !src.url) throw Error("Byse: sin fuente");
         var o = { url: src.url, headers: { "Referer": base + "/", "User-Agent": UA } };
@@ -740,7 +756,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
         if (titles.length === 0) return fail("TMDB no devolvió título (id " + tmdbId + ")");
         return fetchEpisodePage(titles, seasonNum, episodeNum).then(function (res) {
             var page = res.page;
-            if (!page) return fail("Sin capítulo. Intentos: " + (res.tried.join(" | ") || "ninguno"));
+            if (!page) return fail("Sin capítulo. Títulos: " + titles.slice(0, 6).join(" / ") + ". Intentos: " + (res.tried.join(" | ") || "ninguno"));
             console.log("[" + PROVIDER_NAME + "] Capítulo encontrado: " + page.slug);
 
             var allServers = parseServers(page.html);
