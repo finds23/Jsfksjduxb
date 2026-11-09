@@ -1,15 +1,4 @@
 "use strict";
-// providers/frprpkjfjdj.js  (v3: más títulos de TMDB y más slugs candidatos)
-// Provider Nuvio (series) para un sitio con URLs del tipo
-//   /ver/<serie>/temporada-N/capitulo-M.html
-//
-// Flujo:
-//   TMDB -> títulos -> slug(s) -> página del capítulo -> códigos de servidores
-//   -> /player/<código> (trae un iframe con el embed real; si no, /external/<código>?s=1)
-//   -> extractor según el host del embed (Vidara, VOE, Streamwish/Vidhide).
-//
-// Contrato Nuvio: exports.getStreams(tmdbId, type, season, episode) -> Promise<Array<Stream>>
-// (Sin async/await a propósito: solo Promises, para que corra en cualquier motor.)
 
 function b64decode(input) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -33,29 +22,24 @@ var PROVIDER_NAME = "frprpkjfjdj";
 var SITE_BASE = b64decode("aHR0cHM6Ly93d3cuZmxpeGNvcm4ubmV0");
 var TMDB_API_KEY = "56db0ec297530920213e1503706b81ff";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-// DEBUG: true agrega a la lista de streams una tarjeta "⚠" con los servidores que
-// fallaron o no están soportados (muestra el host). Ponlo en false cuando todo funcione.
-var DEBUG = true;
-// PROBE: con DEBUG, además prueba el m3u8 (master -> variante -> segmento). Retrasa la respuesta, déjalo en false salvo para diagnosticar.
-var PROBE = false;
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
-// SOLO_LATINO: true descarta los enlaces que la página no marca como latino.
+
+// true: agrega una tarjeta "⚠" con lo que falló. Ponlo en false cuando todo funcione.
+var DEBUG = true;
+// true: descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
-// Máximo de slugs distintos que se prueban contra el sitio
-var MAX_SLUGS = 10;
-// Switch de sources
-var ENABLED_SOURCES = {
-    Vidara: true,    // HLS vía POST /api/stream; en unas series funciona y en otras no (en T1E1 de Un trabajo maldito da 404)
-    Voe: true,       // HLS/MP4 (a veces pide verificación anti-bot y no funciona)
-    Streamwish: true, // Streamwish / Vidhide / Filelions / Lulustream (script empaquetado con hls2/hls3/hls4)
-    Streamtape: true, // MP4; extractor portado de animejara.js (probado en JKAnime)
-    Byse: false,      // desactivado: el playback responde 405 y la página pide doble clic (anti-bot)
-    Vidmoly: false,   // fuera por ahora: abre siempre en externo; sin probar
-    Dood: false       // desactivado: Dsvplay devuelve la página vacía y tampoco reproduce en la página
+
+// Series cuyo slug en flixcorn no sale de los títulos de TMDB: { "id de TMDB": "slug" }
+var SLUG_OVERRIDES = {
+    "293610": "doctor-x-la-era-de-la-mafia-blanca"
 };
-var CryptoJS = null;
-try { CryptoJS = require("crypto-js"); } catch (_) { CryptoJS = null; }
+
+var ENABLED_SOURCES = {
+    Vidara: true,     // en unas series funciona y en otras no
+    Voe: true,        // a veces pide verificación anti-bot
+    Streamwish: true, // Streamwish / Vidhide / Filelions / Lulustream
+    Streamtape: true
+};
 
 // ─────────────────────────────────────────────
 // Utilidades
@@ -68,7 +52,7 @@ function getHost(url) {
     return getOrigin(url).replace(/^https?:\/\//i, "").toLowerCase();
 }
 function stripAccents(s) {
-    try { return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+    try { return String(s).normalize("NFD").replace(/[̀-ͯ]/g, ""); }
     catch (_) { return String(s); }
 }
 function slugify(s) {
@@ -103,41 +87,27 @@ function fetchText(url, referer, extraHeaders) {
 // ─────────────────────────────────────────────
 // TMDB -> títulos
 // ─────────────────────────────────────────────
-// Trae el título en varios idiomas y los títulos alternativos (países hispanohablantes),
-// porque el sitio puede usar un nombre distinto al de TMDB en es-MX/en-US
-// (ej. "Doctor X: La era de la mafia blanca").
 function getTMDBTitles(tmdbId) {
-    function fetchJson(url) {
+    function fetchLang(lang) {
+        var url = "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=" + lang;
         return fetch(url, { headers: { "User-Agent": UA } })
             .then(function (resp) { return resp.ok ? resp.json() : null; })
             .then(function (data) { return data && data.success === false ? null : data; })
             .catch(function () { return null; });
     }
-    function fetchLang(lang) {
-        return fetchJson("https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=" + lang);
-    }
-    var langs = ["es-MX", "es-ES", "es-419", "es-AR", "en-US"];
-    var altUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/alternative_titles?api_key=" + TMDB_API_KEY;
-    return Promise.all(langs.map(fetchLang).concat([fetchJson(altUrl)])).then(function (r) {
+    return Promise.all([fetchLang("es-MX"), fetchLang("en-US")]).then(function (r) {
         var titles = [];
         var seen = {};
-        function addTitle(t) {
-            if (!t) return;
-            var key = slugify(t);
-            if (!key || seen[key]) return;
-            seen[key] = true;
-            titles.push(t);
-        }
-        r.slice(0, langs.length).forEach(function (d) {
+        [r[0], r[1]].forEach(function (d) {
             if (!d) return;
-            addTitle(d.name);
-            addTitle(d.original_name);
+            [d.name, d.original_name].forEach(function (t) {
+                if (!t) return;
+                var key = slugify(t);
+                if (!key || seen[key]) return;
+                seen[key] = true;
+                titles.push(t);
+            });
         });
-        // Títulos alternativos: primero los de países hispanohablantes
-        var alt = (r[langs.length] && r[langs.length].results) || [];
-        var latam = /^(MX|ES|AR|CO|CL|PE|VE|US)$/;
-        alt.filter(function (a) { return latam.test(a.iso_3166_1); })
-            .forEach(function (a) { addTitle(a.title); });
         return titles;
     });
 }
@@ -145,16 +115,20 @@ function getTMDBTitles(tmdbId) {
 // ─────────────────────────────────────────────
 // Página del capítulo
 // ─────────────────────────────────────────────
-function fetchEpisodePage(titles, season, episode) {
+function fetchEpisodePage(tmdbId, titles, season, episode) {
     var slugs = [];
+    var forced = SLUG_OVERRIDES[String(tmdbId)];
+    if (forced) slugs.push(forced);
     titles.forEach(function (t) {
         var sl = slugify(t);
-        if (sl && slugs.indexOf(sl) === -1) slugs.push(sl);
+        // Un slug de menos de 3 letras (ej. "x") nunca es una serie real
+        if (sl.length >= 3 && slugs.indexOf(sl) === -1) slugs.push(sl);
     });
     var tried = [];
-    return Promise.all(slugs.slice(0, MAX_SLUGS).map(function (slug) {
+    return Promise.all(slugs.slice(0, 5).map(function (slug) {
         var url = SITE_BASE + "/ver/" + slug + "/temporada-" + season + "/capitulo-" + episode + ".html";
         return fetchText(url).then(function (r) {
+            // El sitio responde 200 aunque la página no exista, por eso se buscan los servidores
             var hasServers = r.ok && (r.html.indexOf("/player/") !== -1 || r.html.indexOf("/external/") !== -1);
             tried.push(slug + ": HTTP " + r.status + (r.ok && !hasServers ? " sin servidores" : ""));
             return hasServers ? { slug: slug, url: url, html: r.html } : null;
@@ -176,8 +150,8 @@ function lastMatch(re, text) {
     return last;
 }
 
-// Cada servidor tiene un enlace /player/<código> (y /external/<código>).
-// El idioma y la calidad aparecen justo antes (imagen language/<idioma>.png y "720p").
+// Cada servidor es un enlace /player/<código> (o /external/<código>).
+// El idioma y la calidad aparecen antes (imagen language/<idioma>.png y "720p").
 function collectCodes(html, kind) {
     var re = new RegExp("/" + kind + "/([A-Za-z0-9]+)", "g");
     var servers = [];
@@ -206,7 +180,7 @@ function parseServers(html) {
 }
 
 // ─────────────────────────────────────────────
-// Resolver el código de servidor -> URL del embed
+// Código de servidor -> URL del embed
 // ─────────────────────────────────────────────
 function isExternalUrl(u) {
     var ownHost = getHost(SITE_BASE).replace(/^www\./, "");
@@ -232,31 +206,26 @@ function findUrlInJson(value, depth) {
 function findEmbedInHtml(html, baseUrl) {
     var unescaped = html.replace(/\\\//g, "/").replace(/&amp;/g, "&");
     var m;
-    // 1) iframe (caso de /player/<código>)
     var ifr = /<iframe[^>]+?(?:data-src|src)=["']([^"']+)["']/gi;
     while ((m = ifr.exec(unescaped)) !== null) {
         var u = absUrl(m[1], baseUrl);
         if (isExternalUrl(u) && !SOCIAL_RE.test(u)) return u;
     }
-    // 2) URL con forma de embed (/e/<id>, /embed/<id>, /v/<id>) de otro dominio
     var embRe = /https?:\/\/[a-z0-9.-]+\/(?:e|embed|embed-[a-z0-9]*|v)\/[A-Za-z0-9_-]+/gi;
     while ((m = embRe.exec(unescaped)) !== null) {
         if (isExternalUrl(m[0]) && !SOCIAL_RE.test(m[0])) return m[0];
     }
-    // 3) meta refresh / location
     m = unescaped.match(/http-equiv=["']refresh["'][^>]*content=["'][^"']*url=([^"']+)["']/i);
     if (m && isExternalUrl(m[1])) return m[1];
     var locRe = /location(?:\.href)?\s*(?:=|\.replace\(|\.assign\()\s*["'](https?:\/\/[^"']+)["']/gi;
     while ((m = locRe.exec(unescaped)) !== null) {
         if (isExternalUrl(m[1])) return m[1];
     }
-    // 4) data-*
     var dataRe = /data-(?:url|href|link|target|src)=["']([^"']+)["']/gi;
     while ((m = dataRe.exec(unescaped)) !== null) {
         var du = absUrl(m[1], baseUrl);
         if (isExternalUrl(du) && !SOCIAL_RE.test(du)) return du;
     }
-    // 5) atob("...")
     var b64Re = /atob\(\s*["']([A-Za-z0-9+\/=_-]{16,})["']\s*\)/g;
     while ((m = b64Re.exec(unescaped)) !== null) {
         try {
@@ -264,7 +233,6 @@ function findEmbedInHtml(html, baseUrl) {
             if (isExternalUrl(decoded)) return decoded;
         } catch (_) { }
     }
-    // 6) cualquier enlace externo (último recurso)
     var hrefRe = /href=["'](https?:\/\/[^"']+)["']/gi;
     while ((m = hrefRe.exec(unescaped)) !== null) {
         if (isExternalUrl(m[1]) && !SOCIAL_RE.test(m[1])) return m[1];
@@ -272,7 +240,7 @@ function findEmbedInHtml(html, baseUrl) {
     return null;
 }
 
-// /external/<código>?s=1 : redirige o responde JSON/HTML con el embed.
+// /external/<código>?s=1 redirige o responde JSON/HTML con el embed.
 function resolveExternal(code) {
     var pageUrl = SITE_BASE + "/external/" + code;
     return fetch(pageUrl + "?s=1", {
@@ -296,7 +264,7 @@ function resolveExternal(code) {
     });
 }
 
-// Primero /player/<código> (trae el iframe); si no sirve, /external/<código>?s=1.
+// Primero /player/<código> (trae el iframe); si no sirve, /external/<código>.
 function resolveServer(code, referer) {
     return fetchText(SITE_BASE + "/player/" + code, referer).then(function (r) {
         var e = r.ok ? findEmbedInHtml(r.html, r.url) : null;
@@ -312,14 +280,11 @@ function detectSource(url) {
     if (/(^|\.)voe\./.test(host) || host.indexOf("voe") === 0) return "Voe";
     if (/wish|vidhide|filelions|hglink|dhcplay|streamhg|callistanise|dingtezuni|embedwish|swish|vidhidepro|minochinos|lulu|vibuxer|hgcloud/.test(host)) return "Streamwish";
     if (/streamtape|tapecontent|strtape|stape|tape\./.test(host)) return "Streamtape";
-    if (/byse|filemoon|moonplayer/.test(host)) return "Byse";
-    if (/vidmoly/.test(host)) return "Vidmoly";
-    if (/dsvplay|dood|dsv|d0o0d|ds2play|d000d|doodstream|vidply/.test(host)) return "Dood";
     return null;
 }
 
 // ─────────────────────────────────────────────
-// Extractores (cada uno devuelve Promise<Array<{url, headers, type, label?, format?}>>)
+// Extractores: cada uno devuelve Promise<Array<{url, headers, type, label?, format?}>>
 // ─────────────────────────────────────────────
 
 // Vidara: POST /api/stream {filecode, device} -> { streaming_url }
@@ -411,7 +376,7 @@ function extractVoe(embedUrl, hops) {
     });
 }
 
-// Streamwish / Vidhide / Filelions: script empaquetado (p,a,c,k,e,d) con var links={"hls2":...}
+// Streamwish / Vidhide / Filelions / Lulustream: script empaquetado (p,a,c,k,e,d) con "hls2":...
 var PACKED_RE = /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?\}\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/;
 function unpackPacked(html) {
     var m = html.match(PACKED_RE);
@@ -427,8 +392,20 @@ function unpackPacked(html) {
     while (c--) d[e(c)] = k[c] || e(c);
     return p.replace(/\b\w+\b/g, function (w) { return d[w] || w; });
 }
+function describePage(html) {
+    var t = /<title[^>]*>([^<]*)/i.exec(html || "");
+    var scripts = [];
+    var re = /<script[^>]+src=["']([^"']+)["']/gi, m;
+    while ((m = re.exec(html || "")) !== null && scripts.length < 2) scripts.push(m[1].split("/").pop().slice(0, 30));
+    return (html || "").length + "b" +
+        ", título=" + (t ? t[1].trim().slice(0, 25) : "?") +
+        ", m3u8=" + (/m3u8/.test(html) ? "sí" : "no") +
+        ", packer=" + (/eval\(function\(p,a,c,k,e,/.test(html) ? "sí" : "no") +
+        ", file:=" + (/file\s*:/.test(html) ? "sí" : "no") +
+        (scripts.length ? ", scripts=" + scripts.join(",") : "");
+}
 function extractWish(embedUrl) {
-    // Se pide como lo haría el navegador del celular: UA móvil y Referer de flixcorn (el iframe vive ahí)
+    // UA móvil y Referer de flixcorn (el iframe vive ahí)
     return fetchText(embedUrl, SITE_BASE + "/", { "User-Agent": MOBILE_UA, "Accept-Language": "es-419,es;q=0.9" }).then(function (r) {
         var origin = getOrigin(r.url || embedUrl);
         var js = r.html;
@@ -443,7 +420,7 @@ function extractWish(embedUrl) {
             u = absUrl(u, origin);
             if (!/^https?:/i.test(u) || seen[u]) return;
             seen[u] = true;
-            // Encabezados que sí reproducen en Nuvio: Referer y Origin del embed + UA móvil (probado con Lulustream)
+            // Estos encabezados son los que sí reproducen en Nuvio (probado con Lulustream)
             out.push({
                 url: u,
                 headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": MOBILE_UA, "Accept": "*/*", "Accept-Language": "es-419,es;q=0.9" },
@@ -459,20 +436,15 @@ function extractWish(embedUrl) {
             while ((m = f.exec(js)) !== null) add("hls", m[1]);
         }
         if (out.length === 0) {
-            // último recurso: cualquier .m3u8 escrito en la página (relativo o absoluto)
             var any = /["'](https?:\/\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*|\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*)["']/g;
             while ((m = any.exec(js)) !== null) add("hls", m[1]);
         }
         if (out.length === 0) throw Error(name + ": no se encontró ningún hls (" + describePage(r.html) + ")");
-        if (!DEBUG || !PROBE) return out;
-        // Con DEBUG: probar cada enlace (master, variante y primer segmento) y mostrar el resultado en la tarjeta
-        return Promise.all(out.slice(0, 3).map(function (o) {
-            return probeHls(o).then(function (n) { o.note = n; });
-        })).then(function () { return out; });
+        return out;
     });
 }
 
-// Streamtape (portado de animejara.js): el embed arma el enlace con getElementById('robotlink'/'botlink').innerHTML
+// Streamtape: el embed arma el enlace con getElementById('robotlink'/'botlink').innerHTML
 function embedId(u) {
     var clean = String(u).replace(/[?#].*$/, "");
     var m = /\/(?:e|d|v|embed)\/([A-Za-z0-9_-]+)/.exec(clean);
@@ -510,223 +482,17 @@ function extractStreamtape(embedUrl) {
     return tryNext(0);
 }
 
-// Byse / Filemoon (portado de animejara.js): API cifrada con AES-GCM. Necesita crypto-js.
-function b64uWords(t) {
-    var b = String(t || "").replace(/-/g, "+").replace(/_/g, "/");
-    while (b.length % 4) b += "=";
-    return CryptoJS.enc.Base64.parse(b);
-}
-function getJson(url, headers) {
-    var h = { "User-Agent": UA };
-    if (headers) for (var k in headers) h[k] = headers[k];
-    return fetch(url, { headers: h }).then(function (r) {
-        if (!r.ok) throw Error("HTTP " + r.status + " en " + getHost(url));
-        return r.json();
-    });
-}
-function extractByse(embedUrl) {
-    if (!CryptoJS) return Promise.reject(Error("Byse: crypto-js no disponible"));
-    if (embedUrl.indexOf("//") === 0) embedUrl = "https:" + embedUrl;
-    var base = getOrigin(embedUrl);
-    var code = embedId(embedUrl);
-    return getJson(base + "/api/videos/" + code + "/embed/details", { "Referer": embedUrl, "X-Requested-With": "XMLHttpRequest" }).then(function (det) {
-        var frame = det && det.embed_frame_url;
-        if (!frame) throw Error("Byse: sin embed_frame_url");
-        var fbase = getOrigin(frame);
-        var fcode = embedId(frame);
-        return bysePlayback(fbase + "/api/videos/" + fcode + "/embed/playback", frame, embedUrl);
-    }).then(function (play) {
-        var p = play && play.playback;
-        if (!p || !p.key_parts || !p.payload || !p.iv) throw Error("Byse: playback sin datos");
-        var key = b64uWords(p.key_parts[0]).concat(b64uWords(p.key_parts[1]));
-        var clear = CryptoJS.AES.decrypt({ ciphertext: b64uWords(p.payload) }, key,
-            { iv: b64uWords(p.iv), mode: CryptoJS.mode.GCM, padding: CryptoJS.pad.NoPadding }).toString(CryptoJS.enc.Utf8);
-        var data = JSON.parse(clear.replace(/^\uFEFF/, ""));
-        var src = data.sources && data.sources[0];
-        if (!src || !src.url) throw Error("Byse: sin fuente");
-        var o = { url: src.url, headers: { "Referer": base + "/", "User-Agent": UA } };
-        if (/\.m3u8/.test(src.url)) o.type = "hls";
-        return [o];
-    });
-}
-
-// Vidmoly (sin probar): el embed trae sources:[{file:"...m3u8"}], a veces dentro de un script empaquetado
-function extractVidmoly(embedUrl) {
-    var origin = getOrigin(embedUrl);
-    var id = embedId(embedUrl);
-    // /v/<id> es una página Nuxt cuyo iframe apunta a vidmoly.biz/embed-<id>.html: se pide ese embed primero
-    var cands = ["https://vidmoly.biz/embed-" + id + ".html", origin + "/embed-" + id + ".html", embedUrl, "https://vidmoly.me/embed-" + id + ".html", origin + "/w/" + id]
-        .filter(function (v, i, a) { return a.indexOf(v) === i; });
-    var lastErr = null;
-    function tryNext(i) {
-        if (i >= cands.length) throw lastErr || Error("Vidmoly: no se encontró el video");
-        return fetchText(cands[i], origin + "/").then(function (r) {
-            var js = r.html;
-            var un = unpackPacked(js);
-            if (un) js = un + "\n" + js;
-            js = js.replace(/\\\//g, "/");
-            var m = js.match(/file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i) ||
-                js.match(/["'](https?:\/\/[^"'\s\\<>]+\.m3u8[^"'\s\\<>]*)["']/i);
-            if (m) {
-                var u = absUrl(m[1], origin);
-                var o = { url: u, headers: { "Referer": origin + "/", "User-Agent": UA } };
-                if (/\.m3u8/.test(u)) o.type = "hls";
-                return [o];
-            }
-            lastErr = Error("Vidmoly: sin source en " + getHost(cands[i]));
-            return tryNext(i + 1);
-        }, function (e) { lastErr = e; return tryNext(i + 1); });
-    }
-    return tryNext(0);
-}
-
-// ── Diagnóstico (solo se usa al fallar o con DEBUG) ──
-function describePage(html) {
-    var t = /<title[^>]*>([^<]*)/i.exec(html || "");
-    var scripts = [];
-    var re = /<script[^>]+src=["']([^"']+)["']/gi, m;
-    while ((m = re.exec(html || "")) !== null && scripts.length < 2) scripts.push(m[1].split("/").pop().slice(0, 30));
-    return (html || "").length + "b" +
-        ", título=" + (t ? t[1].trim().slice(0, 25) : "?") +
-        ", m3u8=" + (/m3u8/.test(html) ? "sí" : "no") +
-        ", packer=" + (/eval\(function\(p,a,c,k,e,/.test(html) ? "sí" : "no") +
-        ", file:=" + (/file\s*:/.test(html) ? "sí" : "no") +
-        (scripts.length ? ", scripts=" + scripts.join(",") : "");
-}
-// Busca un video en un HTML genérico (script empaquetado, file:"...", cualquier .m3u8/.mp4)
-function findMedia(html, origin) {
-    var js = html;
-    var un = unpackPacked(js);
-    if (un) js = un + "\n" + js;
-    js = js.replace(/\\\//g, "/");
-    var m = js.match(/file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i) ||
-        js.match(/["'](https?:\/\/[^"'\s\\<>]+\.(?:m3u8|mp4)[^"'\s\\<>]*)["']/i);
-    if (!m) return null;
-    var u = absUrl(m[1], origin);
-    return /^https?:/i.test(u) ? { url: u, type: /\.m3u8/i.test(u) ? "hls" : "mp4" } : null;
-}
-// Vidara: si la API falla, mira qué rutas /api/ trae la página y su script para saber cuál cambió
-function vidaraProbe(embedUrl) {
-    var origin = getOrigin(embedUrl);
-    function apis(text) {
-        var found = [], m, re = /["'`](\/api\/[A-Za-z0-9_\/.-]{2,40})/g;
-        while ((m = re.exec(text)) !== null) if (found.indexOf(m[1]) === -1 && found.length < 6) found.push(m[1]);
-        return found;
-    }
-    return fetchText(embedUrl, SITE_BASE + "/").then(function (r) {
-        var info = "página " + r.status + " " + describePage(r.html) + "; api en html: " + (apis(r.html).join(",") || "ninguna");
-        var sm = /<script[^>]+src=["']([^"']+)["']/i.exec(r.html);
-        if (!sm) return info;
-        return fetchText(absUrl(sm[1], r.url || embedUrl), embedUrl).then(function (js) {
-            var fe = [], fm, fre = /fetch\(\s*([^)]{1,60})\)/g;
-            while ((fm = fre.exec(js.html)) !== null && fe.length < 2) fe.push(fm[1].replace(/\s+/g, " "));
-            return info + "; api en js: " + (apis(js.html).join(",") || "ninguna") + (fe.length ? "; fetch: " + fe.join(" ~ ") : "");
-        }, function () { return info; });
-    }).then(function (s) { return s.slice(0, 330); }, function (e) { return "sin detalle (" + e.message + ")"; });
-}
-// Prueba el HLS con los mismos encabezados: master -> variante -> primer segmento
-function hlsResolve(base, ref) {
-    if (/^https?:\/\//i.test(ref)) return ref;
-    if (ref.charAt(0) === "/") return getOrigin(base) + ref;
-    return base.split(/[?#]/)[0].replace(/[^\/]*$/, "") + ref;
-}
-function probeHls(item) {
-    function get(u, extra) {
-        var h = {};
-        for (var k in item.headers) h[k] = item.headers[k];
-        if (extra) for (var k2 in extra) h[k2] = extra[k2];
-        return fetch(u, { headers: h });
-    }
-    var note = "";
-    return get(item.url).then(function (r) {
-        note = "master " + r.status;
-        return r.text().then(function (t) {
-            if (!r.ok) { note += " " + t.replace(/\s+/g, " ").slice(0, 70); return null; }
-            var lines = t.split(/\r?\n/).map(function (l) { return l.trim(); });
-            var variant = null;
-            for (var i = 0; i < lines.length; i++) {
-                if (lines[i].indexOf("#EXT-X-STREAM-INF") === 0) { variant = lines[i + 1]; break; }
-            }
-            if (variant) {
-                var vu = hlsResolve(item.url, variant);
-                return get(vu).then(function (vr) {
-                    note += " | variante " + vr.status;
-                    return vr.ok ? vr.text().then(function (vt) { return { base: vu, text: vt }; }) : null;
-                });
-            }
-            return { base: item.url, text: t };
-        });
-    }).then(function (pl) {
-        if (!pl) return;
-        var seg = null;
-        pl.text.split(/\r?\n/).forEach(function (l) { l = l.trim(); if (!seg && l && l.charAt(0) !== "#") seg = l; });
-        if (!seg) { note += " | sin segmentos"; return; }
-        return get(hlsResolve(pl.base, seg), { "Range": "bytes=0-1" }).then(function (sr) { note += " | segmento " + sr.status; });
-    }).then(function () { return note; }, function (e) { return note + " | error " + e.message; });
-}
-// Byse: el playback ahora puede exigir POST (con GET responde 405)
-function bysePlayback(url, frame, embedUrl) {
-    var h = { "User-Agent": UA, "Accept": "*/*", "Referer": frame, "X-Embed-Parent": embedUrl, "Accept-Language": "en-US,en;q=0.5" };
-    return fetch(url, { headers: h }).then(function (r) {
-        if (r.ok) return r.json();
-        var first = r.status;
-        var hp = {};
-        for (var k in h) hp[k] = h[k];
-        hp["Content-Type"] = "application/json";
-        return fetch(url, { method: "POST", headers: hp, body: "{}" }).then(function (r2) {
-            return r2.text().then(function (t) {
-                if (r2.ok) { try { return JSON.parse(t); } catch (_) { } }
-                throw Error("Byse playback: GET " + first + ", POST " + r2.status + " " + t.replace(/\s+/g, " ").slice(0, 90));
-            });
-        });
-    });
-}
-
-// Dsvplay y clones de Doodstream (sin probar): /pass_md5/<ruta>/<token> devuelve la base del MP4
-function extractDood(embedUrl) {
-    var origin = getOrigin(embedUrl);
-    var id = embedId(embedUrl);
-    var pageUrl = origin + "/e/" + id;
-    return fetchText(pageUrl, SITE_BASE + "/").then(function (r) {
-        var pm = r.html.match(/\/pass_md5\/([A-Za-z0-9_-]+\/[A-Za-z0-9_-]+)/);
-        if (!pm) {
-            var g = findMedia(r.html, origin);
-            if (g) {
-                var go = { url: g.url, headers: { "Referer": origin + "/", "User-Agent": UA }, type: g.type };
-                return [go];
-            }
-            throw Error("Dsvplay: sin pass_md5 ni video (" + describePage(r.html) + ")");
-        }
-        var token = pm[1].split("/").pop();
-        var ref = getOrigin(r.url || pageUrl);
-        return fetchText(ref + "/pass_md5/" + pm[1], pageUrl).then(function (b) {
-            var base = String(b.html).trim();
-            if (!/^https?:/i.test(base)) throw Error("Dood: respuesta inesperada de pass_md5");
-            var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-            var rnd = "";
-            for (var i = 0; i < 10; i++) rnd += chars.charAt(Math.floor(Math.random() * chars.length));
-            return [{ url: base + rnd + "?token=" + token + "&expiry=" + Date.now(), headers: { "Referer": ref + "/", "User-Agent": UA }, format: "MP4" }];
-        });
-    });
-}
-
 var ALL_SOURCES = {
     Vidara: { label: "Vidara", format: "HLS", extract: extractVidara },
     Voe: { label: "VOE", format: "HLS", extract: extractVoe },
     Streamwish: { label: "Streamwish", format: "HLS", extract: extractWish },
-    Streamtape: { label: "Streamtape", format: "MP4", extract: extractStreamtape },
-    Byse: { label: "Byse", format: "HLS", extract: extractByse },
-    Vidmoly: { label: "Vidmoly", format: "HLS", extract: extractVidmoly },
-    Dood: { label: "Dsvplay", format: "MP4", extract: extractDood }
+    Streamtape: { label: "Streamtape", format: "MP4", extract: extractStreamtape }
 };
 var SOURCE_EXTRACTORS = {};
 Object.keys(ALL_SOURCES).forEach(function (key) {
     if (ENABLED_SOURCES[key]) SOURCE_EXTRACTORS[key] = ALL_SOURCES[key];
 });
 
-// ─────────────────────────────────────────────
-// Etiquetas
-// ─────────────────────────────────────────────
 function getLangLabel(lang) {
     var l = String(lang || "").toLowerCase();
     if (l === "lat" || l === "latino" || l === "") return "🇲🇽 LATINO";
@@ -736,7 +502,7 @@ function getLangLabel(lang) {
 }
 
 // ─────────────────────────────────────────────
-// Entry point — contrato Nuvio
+// Entry point
 // ─────────────────────────────────────────────
 exports.getStreams = function (tmdbId, type, season, episode) {
     if (!tmdbId || type !== "tv") return Promise.resolve([]);
@@ -753,8 +519,8 @@ exports.getStreams = function (tmdbId, type, season, episode) {
     }
 
     return getTMDBTitles(tmdbId).then(function (titles) {
-        if (titles.length === 0) return fail("TMDB no devolvió título (id " + tmdbId + ")");
-        return fetchEpisodePage(titles, seasonNum, episodeNum).then(function (res) {
+        if (titles.length === 0 && !SLUG_OVERRIDES[String(tmdbId)]) return fail("TMDB no devolvió título (id " + tmdbId + ")");
+        return fetchEpisodePage(tmdbId, titles, seasonNum, episodeNum).then(function (res) {
             var page = res.page;
             if (!page) return fail("Sin capítulo. Títulos: " + titles.slice(0, 6).join(" / ") + ". Intentos: " + (res.tried.join(" | ") || "ninguno"));
             console.log("[" + PROVIDER_NAME + "] Capítulo encontrado: " + page.slug);
@@ -792,7 +558,7 @@ exports.getStreams = function (tmdbId, type, season, episode) {
                                 url: resolved.url,
                                 quality: "📺 " + (resolved.label || source.label) + " (" + (resolved.format || source.format) + ")\n" +
                                     server.quality + " | WEB-DL\n" + getLangLabel(server.lang) +
-                                    (DEBUG ? "\n🔗 " + String(resolved.url).slice(0, 150) + (resolved.note ? "\n🔎 " + resolved.note : "") : ""),
+                                    (DEBUG ? "\n🔗 " + String(resolved.url).slice(0, 150) : ""),
                                 headers: resolved.headers
                             };
                             if (resolved.type) s.type = resolved.type;
