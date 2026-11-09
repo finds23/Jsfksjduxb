@@ -1,12 +1,12 @@
 {
   "name": "frprpkjfjdj",
-  "version": "1.3",
+  "version": "1.4",
   "scrapers": [
     {
       "id": "frprpkjfjdj",
       "name": "frprpkjfjdj",
       "description": ".",
-      "version": "1.3",
+      "version": "1.4",
       "author": "-",
       "supportedTypes": [
         "tv"
