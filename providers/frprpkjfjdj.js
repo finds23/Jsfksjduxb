@@ -36,7 +36,7 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 
 // DEBUG: true agrega a la lista de streams una tarjeta "⚠" con los servidores que
 // fallaron o no están soportados (muestra el host). Ponlo en false cuando todo funcione.
-var DEBUG = false;
+var DEBUG = true;
 // PROBE: con DEBUG, además prueba el m3u8 (master -> variante -> segmento). Retrasa la respuesta, déjalo en false salvo para diagnosticar.
 var PROBE = false;
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
