@@ -25,7 +25,7 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
 
 // true: agrega una tarjeta "⚠" con lo que falló. Ponlo en false cuando todo funcione.
-var DEBUG = true;
+var DEBUG = false;
 // true: descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
 
