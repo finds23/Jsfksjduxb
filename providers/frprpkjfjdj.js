@@ -25,13 +25,14 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
 
 // true: agrega una tarjeta "⚠" con lo que falló. Ponlo en false cuando todo funcione.
-var DEBUG = true;
+var DEBUG = false;
 // true: descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
 
 // Series cuyo slug en flixcorn no sale de los títulos de TMDB: { "id de TMDB": "slug" }
 var SLUG_OVERRIDES = {
-    "293610": "doctor-x-la-era-de-la-mafia-blanca"
+    "293610": "doctor-x-la-era-de-la-mafia-blanca",
+    "312661": "milagros-en-urgencias" // Miracles of the ER
 };
 
 var ENABLED_SOURCES = {
@@ -88,26 +89,44 @@ function fetchText(url, referer, extraHeaders) {
 // TMDB -> títulos
 // ─────────────────────────────────────────────
 function getTMDBTitles(tmdbId) {
-    function fetchLang(lang) {
-        var url = "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=" + lang;
+    var base = "https://api.themoviedb.org/3/tv/" + tmdbId;
+    function getJson(path, lang) {
+        var url = base + path + "?api_key=" + TMDB_API_KEY + (lang ? "&language=" + lang : "");
         return fetch(url, { headers: { "User-Agent": UA } })
             .then(function (resp) { return resp.ok ? resp.json() : null; })
             .then(function (data) { return data && data.success === false ? null : data; })
             .catch(function () { return null; });
     }
-    return Promise.all([fetchLang("es-MX"), fetchLang("en-US")]).then(function (r) {
+    return Promise.all([
+        getJson("", "es-MX"), getJson("", "es-ES"), getJson("", "en-US"),
+        getJson("/alternative_titles"), getJson("/translations")
+    ]).then(function (r) {
         var titles = [];
         var seen = {};
-        [r[0], r[1]].forEach(function (d) {
-            if (!d) return;
-            [d.name, d.original_name].forEach(function (t) {
-                if (!t) return;
-                var key = slugify(t);
-                if (!key || seen[key]) return;
-                seen[key] = true;
-                titles.push(t);
-            });
+        function push(t) {
+            if (!t) return;
+            var key = slugify(t);
+            if (!key || seen[key]) return;
+            seen[key] = true;
+            titles.push(t);
+        }
+        var main = [r[0], r[1], r[2]].filter(Boolean);
+        // 1) "Nombre (Título original)": así llama flixcorn a series con nombre repetido,
+        //    ej. "El instituto (The Institute)" -> el-instituto-the-institute
+        main.forEach(function (d) {
+            if (d.name && d.original_name && slugify(d.name) !== slugify(d.original_name)) {
+                push(d.name + " (" + d.original_name + ")");
+            }
         });
+        // 2) Nombres normales
+        main.forEach(function (d) { push(d.name); push(d.original_name); });
+        // 3) Títulos alternativos (ej. "Milagros en urgencias") y traducciones al español
+        if (r[3] && r[3].results) r[3].results.forEach(function (x) { push(x.title); });
+        if (r[4] && r[4].translations) {
+            r[4].translations.forEach(function (x) {
+                if (x.iso_639_1 === "es" && x.data) push(x.data.name);
+            });
+        }
         return titles;
     });
 }
@@ -125,7 +144,7 @@ function fetchEpisodePage(tmdbId, titles, season, episode) {
         if (sl.length >= 3 && slugs.indexOf(sl) === -1) slugs.push(sl);
     });
     var tried = [];
-    return Promise.all(slugs.slice(0, 5).map(function (slug) {
+    return Promise.all(slugs.slice(0, 12).map(function (slug) {
         var url = SITE_BASE + "/ver/" + slug + "/temporada-" + season + "/capitulo-" + episode + ".html";
         return fetchText(url).then(function (r) {
             // El sitio responde 200 aunque la página no exista, por eso se buscan los servidores
