@@ -25,7 +25,7 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 var MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36";
 
 // true: agrega una tarjeta "⚠" con lo que falló. Ponlo en false cuando todo funcione.
-var DEBUG = true;
+var DEBUG = false;
 // true: descarta los enlaces que la página no marca como latino.
 var SOLO_LATINO = true;
 
@@ -117,6 +117,14 @@ function getTMDBTitles(tmdbId) {
             if (d.name && d.original_name && slugify(d.name) !== slugify(d.original_name)) {
                 push(d.name + " (" + d.original_name + ")");
             }
+        });
+        // 1b) "Título-año": flixcorn usa así las series con nombre repetido,
+        //     ej. the-institute-2025
+        main.forEach(function (d) {
+            var yr = (d.first_air_date || "").slice(0, 4);
+            if (!yr) return;
+            push(d.original_name + " " + yr);
+            push(d.name + " " + yr);
         });
         // 2) Nombres normales
         main.forEach(function (d) { push(d.name); push(d.original_name); });
