@@ -180,24 +180,22 @@ function lastMatch(re, text) {
 // Cada servidor es un enlace /player/<código> (o /external/<código>).
 // El idioma y la calidad aparecen antes (imagen language/<idioma>.png y "720p").
 function collectCodes(html, kind) {
-    var re = new RegExp("/" + kind + "/([A-Za-z0-9]+)", "g");
+    // Recorre el HTML en orden y recuerda el último idioma y la última calidad vistos:
+    // la bandera y la calidad salen una sola vez por grupo, y todos los servidores
+    // que vienen después las heredan hasta que aparezca otra distinta.
+    var re = new RegExp("language\\/([a-z]+)\\.(?:png|webp|svg|jpg)|\\b(\\d{3,4})p\\b|\\/" + kind + "\\/([A-Za-z0-9]+)", "gi");
     var servers = [];
     var seen = {};
-    var prevIndex = 0;
+    var curLang = "lat";
+    var curQuality = "HD";
     var m;
     while ((m = re.exec(html)) !== null) {
-        var code = m[1];
-        if (seen[code]) continue;
+        if (m[1]) { curLang = m[1].toLowerCase(); continue; }
+        if (m[2]) { curQuality = m[2] + "p"; continue; }
+        var code = m[3];
+        if (!code || seen[code]) continue;
         seen[code] = true;
-        var chunk = html.slice(Math.max(prevIndex, m.index - 1500), m.index);
-        var lang = lastMatch(/language\/([a-z]+)\.(?:png|webp|svg|jpg)/gi, chunk);
-        var quality = lastMatch(/(\d{3,4})p/g, chunk);
-        servers.push({
-            code: code,
-            lang: lang ? lang[1].toLowerCase() : "lat",
-            quality: quality ? quality[1] + "p" : "HD"
-        });
-        prevIndex = m.index;
+        servers.push({ code: code, lang: curLang, quality: curQuality });
     }
     return servers;
 }
